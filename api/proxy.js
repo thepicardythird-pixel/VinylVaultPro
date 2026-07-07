@@ -40,15 +40,11 @@ async function _handle(req, res) {
     return res.status(200).send("ok");
   }
 
-  // Strip ?token= from the target URL if present — send as a header instead
+  // Discogs authenticates via a ?token= query param on the target URL, and that
+  // is exactly how the app sends it. LEAVE IT ON THE URL. Do NOT move it to an
+  // `Authorization: Discogs token=` header — Discogs does not honor that form
+  // through this proxy and bounces the call to its website 404 (HTML).
   let targetUrl = u;
-  try {
-    const parsed = new URL(u);
-    if (parsed.searchParams.has("token")) {
-      parsed.searchParams.delete("token");
-      targetUrl = parsed.toString();
-    }
-  } catch (e) {}
 
   // POST passthrough — forwards this request's own Authorization/Content-Type headers
   // and body directly to the target. Needed for OAuth token exchanges (eBay, Discogs
@@ -88,16 +84,21 @@ async function _handle(req, res) {
     "Accept": "application/json",
   };
 
-  // Prefer a real Authorization header sent on this request (e.g. eBay "Bearer ...")
+  // eBay / other Bearer-auth APIs send a real Authorization header — forward it
+  // verbatim and don't touch the URL.
   const incomingAuth = req.headers["authorization"];
   if (incomingAuth) {
     headers["Authorization"] = incomingAuth;
-  } else {
-    const tok = token || (() => {
-      try { return new URL(u).searchParams.get("token"); } catch (e) { return null; }
-    })();
-    if (tok) {
-      headers["Authorization"] = `Discogs token=${tok}`;
+  } else if (token && !/[?&]token=/.test(targetUrl)) {
+    // Discogs token passed as a separate &token= proxy param (e.g. the in-app
+    // "Test Discogs Connection" screen) with no token already on the URL:
+    // put it on the target URL, since that's the only form Discogs accepts.
+    try {
+      const p = new URL(targetUrl);
+      p.searchParams.set("token", token);
+      targetUrl = p.toString();
+    } catch (e) {
+      targetUrl += (targetUrl.includes("?") ? "&" : "?") + "token=" + encodeURIComponent(token);
     }
   }
 
